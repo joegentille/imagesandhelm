@@ -156,8 +156,17 @@ jobs:
           }
           
           # Save logs to files
-          $successLog | Out-File -FilePath "/tmp/success-summary.txt" -Encoding utf8
-          $errorLog | Out-File -FilePath "/tmp/error-summary.txt" -Encoding utf8
+          if ($successLog.Count -gt 0) {
+            $successLog | Out-File -FilePath "/tmp/success-summary.txt" -Encoding utf8
+          } else {
+            "" | Out-File -FilePath "/tmp/success-summary.txt" -Encoding utf8
+          }
+          
+          if ($errorLog.Count -gt 0) {
+            $errorLog | Out-File -FilePath "/tmp/error-summary.txt" -Encoding utf8
+          } else {
+            "" | Out-File -FilePath "/tmp/error-summary.txt" -Encoding utf8
+          }
 
       - name: Create job summary
         if: always()
@@ -169,13 +178,13 @@ jobs:
           if ($imageCount -eq 0) {
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "# ⚠️ No Images to Process"
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "The configuration file \`$CONFIG_FILE\` does not contain any valid images to process."
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "El archivo de configuración \`$CONFIG_FILE\` no contiene imágenes válidas para procesar."
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "**Please verify:**"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- File exists and is readable"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Each object has at least the field \`source_image\` with a non-empty value"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "**Por favor verifica:**"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Que el archivo contenga un array válido"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Que cada objeto tenga al menos el campo \`source_image\` con un valor no vacío"
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "**Example of a valid configuration file:**"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "**Ejemplo de configuración válida:**"
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "``````json"
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "["
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "  {"
@@ -189,16 +198,22 @@ jobs:
             $successLog = @()
             $errorLog = @()
             
-            if (Test-Path "/tmp/success-summary.txt") {
-              $successLog = Get-Content "/tmp/success-summary.txt" | Where-Object { $_.Trim().Length -gt 0 }
+            if (Test-Path "/tmp/success-summary.txt" -PathType Leaf) {
+              $content = Get-Content "/tmp/success-summary.txt" -ErrorAction SilentlyContinue
+              if ($null -ne $content) {
+                $successLog = @($content) | Where-Object { $null -ne $_ -and $_.Trim().Length -gt 0 }
+              }
             }
             
-            if (Test-Path "/tmp/error-summary.txt") {
-              $errorLog = Get-Content "/tmp/error-summary.txt" | Where-Object { $_.Trim().Length -gt 0 }
+            if (Test-Path "/tmp/error-summary.txt" -PathType Leaf) {
+              $content = Get-Content "/tmp/error-summary.txt" -ErrorAction SilentlyContinue
+              if ($null -ne $content) {
+                $errorLog = @($content) | Where-Object { $null -ne $_ -and $_.Trim().Length -gt 0 }
+              }
             }
             
-            $successCount = if ($null -eq $successLog) { 0 } else { @($successLog).Count }
-            $errorCount = if ($null -eq $errorLog) { 0 } else { @($errorLog).Count }
+            $successCount = $successLog.Count
+            $errorCount = $errorLog.Count
             
             if ($successCount -gt 0) {
               Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "# ✅ Windows Images Processed Successfully"

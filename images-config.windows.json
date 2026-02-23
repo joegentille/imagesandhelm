@@ -1,7 +1,7 @@
 [
   {
-    "source_image": "dockurr/windows:5.14",
-    "repository_name": "windows",
-    "tag": "v1"
+    "source_image": "mcr.microsoft.com/windows/servercore:ltsc2022",
+    "repository_name": "windowsservercore",
+    "tag": "ltsc2022"
   }
 ]

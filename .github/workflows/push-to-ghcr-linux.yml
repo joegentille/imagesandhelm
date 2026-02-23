@@ -77,7 +77,7 @@ jobs:
           : > "$SUCCESS_LOG"
           : > "$ERROR_LOG"
           
-          jq -c '.[]' "$CONFIG_FILE" | while read -r line; do
+          while read -r line; do
             SOURCE_IMAGE=$(echo "$line" | jq -r '.source_image')
             REPOSITORY_NAME=$(echo "$line" | jq -r '.repository_name')
             TAG=$(echo "$line" | jq -r '.tag // "latest"')
@@ -132,12 +132,12 @@ jobs:
             
             echo "✅ Done: $SOURCE_IMAGE → ${TARGET_IMAGE}:${TAG}"
             echo "$SOURCE_IMAGE|${TARGET_IMAGE}:${TAG}" >> "$SUCCESS_LOG"
-          done
+          done < <(jq -c '.[]' "$CONFIG_FILE")
           
           # Guardar documentos de reporte para el summary
           cp "$TRIVY_REPORT" /tmp/trivy-summary.txt
-          [ -f "$SUCCESS_LOG" ] && cp "$SUCCESS_LOG" /tmp/success-summary.txt || touch /tmp/success-summary.txt
-          [ -f "$ERROR_LOG" ] && cp "$ERROR_LOG" /tmp/error-summary.txt || touch /tmp/error-summary.txt
+          [ -f "$SUCCESS_LOG" ] && [ -s "$SUCCESS_LOG" ] && cp "$SUCCESS_LOG" /tmp/success-summary.txt || touch /tmp/success-summary.txt
+          [ -f "$ERROR_LOG" ] && [ -s "$ERROR_LOG" ] && cp "$ERROR_LOG" /tmp/error-summary.txt || touch /tmp/error-summary.txt
 
       - name: Create job summary
         if: always()
@@ -145,34 +145,25 @@ jobs:
         run: |
           CONFIG_FILE="${{ github.event.inputs.config_file || 'images-config.linux.json' }}"
           TRIVY_REPORT="/tmp/trivy-summary.txt"
+          SUCCESS_LOG="/tmp/success-summary.txt"
+          ERROR_LOG="/tmp/error-summary.txt"
           IMAGE_COUNT=${{ steps.config.outputs.image_count }}
           
           if [ "$IMAGE_COUNT" -eq 0 ]; then
             echo "# ⚠️ No Images to Process" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "The configuration file \`$CONFIG_FILE\` does not contain any valid images to process." >> $GITHUB_STEP_SUMMARY
+            echo "El archivo de configuración \`$CONFIG_FILE\` no contiene imágenes válidas para procesar." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Please verify:**" >> $GITHUB_STEP_SUMMARY
-            echo "- File exists and is readable" >> $GITHUB_STEP_SUMMARY
-            echo "- Each object has at least the field \`source_image\` with a non-empty value" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Example of a valid configuration file:**" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
-            echo "[" >> $GITHUB_STEP_SUMMARY
-            echo "  {" >> $GITHUB_STEP_SUMMARY
-            echo "    \"source_image\": \"nginx:alpine\"," >> $GITHUB_STEP_SUMMARY
-            echo "    \"repository_name\": \"nginx\"," >> $GITHUB_STEP_SUMMARY
-            echo "    \"tag\": \"v1\"" >> $GITHUB_STEP_SUMMARY
-            echo "  }" >> $GITHUB_STEP_SUMMARY
-            echo "]" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "**Por favor verifica:**" >> $GITHUB_STEP_SUMMARY
+            echo "- Que el archivo contenga un array válido" >> $GITHUB_STEP_SUMMARY
+            echo "- Que cada objeto tenga al menos el campo \`source_image\` con un valor no vacío" >> $GITHUB_STEP_SUMMARY
           else
             # Contar imágenes exitosas y fallidas
             SUCCESS_COUNT=0
-            [ -f "$SUCCESS_LOG" ] && SUCCESS_COUNT=$(wc -l < "$SUCCESS_LOG" | tr -d ' ')
+            [ -f "$SUCCESS_LOG" ] && [ -s "$SUCCESS_LOG" ] && SUCCESS_COUNT=$(wc -l < "$SUCCESS_LOG")
             
             ERROR_COUNT=0
-            [ -f "$ERROR_LOG" ] && ERROR_COUNT=$(wc -l < "$ERROR_LOG" | tr -d ' ')
+            [ -f "$ERROR_LOG" ] && [ -s "$ERROR_LOG" ] && ERROR_COUNT=$(wc -l < "$ERROR_LOG")
             
             if [ "$SUCCESS_COUNT" -gt 0 ]; then
               echo "# ✅ Linux Images Processed Successfully" >> $GITHUB_STEP_SUMMARY
@@ -207,12 +198,11 @@ jobs:
             fi
             
             if [ "$SUCCESS_COUNT" -gt 0 ]; then
-              SUCCESS_LOG="/tmp/success-summary.txt"
-              echo "## 🛡️ Security Scan Report (Trivy - Only Successful Images):" >> $GITHUB_STEP_SUMMARY
+              echo "## 🛡️ Security Scan Report (Trivy - Successful Images Only):" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
               
-              if [ -f "$TRIVY_REPORT" ]; then
+              if [ -f "$TRIVY_REPORT" ] && [ -s "$TRIVY_REPORT" ]; then
                 cat "$TRIVY_REPORT" >> $GITHUB_STEP_SUMMARY
               else
                 echo "No vulnerabilities found or scan not executed" >> $GITHUB_STEP_SUMMARY
