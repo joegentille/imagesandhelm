@@ -2,6 +2,6 @@
   {
     "source_image": "dockurr/windows:5.14",
     "repository_name": "windows",
-    "tag": "5.14"
+    "tag": "v1"
   }
 ]

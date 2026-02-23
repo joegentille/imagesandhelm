@@ -122,13 +122,13 @@ jobs:
           if [ "$IMAGE_COUNT" -eq 0 ]; then
             echo "# ⚠️ No Images to Process" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "El archivo de configuración \`$CONFIG_FILE\` no contiene imágenes válidas para procesar." >> $GITHUB_STEP_SUMMARY
+            echo "The configuration file \`$CONFIG_FILE\` does not contain any valid images to process." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Por favor verifica:**" >> $GITHUB_STEP_SUMMARY
-            echo "- Que el archivo contenga un array válido" >> $GITHUB_STEP_SUMMARY
-            echo "- Que cada objeto tenga al menos el campo \`source_image\` con un valor no vacío" >> $GITHUB_STEP_SUMMARY
+            echo "**Please verify:**" >> $GITHUB_STEP_SUMMARY
+            echo "- File exists and is readable" >> $GITHUB_STEP_SUMMARY
+            echo "- Each object has at least the field \`source_image\` with a non-empty value" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Ejemplo de configuración válida:**" >> $GITHUB_STEP_SUMMARY
+            echo "**Example of a valid configuration file:**" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
             echo "[" >> $GITHUB_STEP_SUMMARY
             echo "  {" >> $GITHUB_STEP_SUMMARY

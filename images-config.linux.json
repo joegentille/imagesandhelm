@@ -2,7 +2,7 @@
   {
     "source_image": "eclipse/che-dev:rc",
     "repository_name": "che-dev",
-    "tag": "v2-eclipse"
+    "tag": "v3"
   },
   {
     "source_image": "postgres:alpine3.22",
