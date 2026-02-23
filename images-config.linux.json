@@ -1,12 +1,12 @@
 [
   {
-    "source_image": "nginx:alpine-perl",
-    "repository_name": "nginx",
-    "tag": "v1"
+    "source_image": "eclipse/che-dev:rc",
+    "repository_name": "che-dev",
+    "tag": "v2-eclipse"
   },
   {
     "source_image": "postgres:alpine3.22",
     "repository_name": "postgres",
-    "tag": "v1"
+    "tag": "v2"
   }
 ]
