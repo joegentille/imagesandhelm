@@ -5,8 +5,8 @@
     "tag": "v1"
   },
   {
-    "source_image": "busybox:table-musl",
-    "repository_name": "busybox",
+    "source_image": "postgres:alpine3.22",
+    "repository_name": "postgres",
     "tag": "v1"
   }
 ]
