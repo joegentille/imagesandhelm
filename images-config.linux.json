@@ -1,0 +1,12 @@
+[
+  {
+    "source_image": "python:3.15.0a6-slim-trixie",
+    "repository_name": "python",
+    "tag": "3.15-slim"
+  },
+  {
+    "source_image": "busybox:table-musl",
+    "repository_name": "busybox",
+    "tag": "v1"
+  }
+]

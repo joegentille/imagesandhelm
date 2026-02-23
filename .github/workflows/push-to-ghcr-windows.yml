@@ -1,0 +1,108 @@
+name: Push Docker Images (Windows) to GHCR
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - '.github/workflows/push-to-ghcr-windows.yml'
+      - 'images-config.windows.json'
+  
+  workflow_dispatch:
+    inputs:
+      config_file:
+        description: 'Configuration file path (default: images-config.windows.json)'
+        required: false
+        type: string
+        default: 'images-config.windows.json'
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  push-to-ghcr:
+    runs-on: windows-latest
+    
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Process images
+        shell: pwsh
+        run: |
+          $CONFIG_FILE = "${{ github.event.inputs.config_file || 'images-config.windows.json' }}"
+          
+          if (-not (Test-Path $CONFIG_FILE)) {
+            Write-Error "Config file not found: $CONFIG_FILE"
+            exit 1
+          }
+          
+          $images = Get-Content $CONFIG_FILE | ConvertFrom-Json
+          
+          foreach ($image in $images) {
+            $sourceImage = $image.source_image
+            $repositoryName = $image.repository_name
+            $tag = $image.tag ?? "latest"
+            $targetImage = "${{ env.REGISTRY }}/${{ github.repository_owner }}/$repositoryName"
+            
+            Write-Host ""
+            Write-Host "════════════════════════════════════════" -ForegroundColor Cyan
+            Write-Host "📦 Processing: $sourceImage" -ForegroundColor Yellow
+            Write-Host "════════════════════════════════════════" -ForegroundColor Cyan
+            
+            Write-Host "📥 Pulling source image..."
+            docker pull "$sourceImage"
+            
+            Write-Host "🏷️  Tagging image..."
+            docker tag "$sourceImage" "${targetImage}:${tag}"
+            docker tag "$sourceImage" "${targetImage}:latest"
+            
+            Write-Host "🚀 Pushing to GHCR..."
+            docker push "${targetImage}:${tag}"
+            docker push "${targetImage}:latest"
+            
+            Write-Host "🧹 Cleaning up..."
+            docker rmi "$sourceImage" "${targetImage}:${tag}" "${targetImage}:latest" 2>$null
+            
+            Write-Host "✅ Done: $sourceImage → ${targetImage}:${tag}" -ForegroundColor Green
+          }
+
+      - name: Create job summary
+        if: success()
+        shell: pwsh
+        run: |
+          $CONFIG_FILE = "${{ github.event.inputs.config_file || 'images-config.windows.json' }}"
+          $images = Get-Content $CONFIG_FILE | ConvertFrom-Json
+          
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "# ✅ Windows Images Pushed Successfully"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Images Processed:"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          
+          foreach ($image in $images) {
+            $source = $image.source_image
+            $repo = $image.repository_name
+            $tag = $image.tag ?? "latest"
+            $line = "- ``$source`` → ``ghcr.io/${{ github.repository_owner }}/$repo`:$tag``"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $line
+          }
+          
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## Security Notes:"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- ⚠️ Trivy scanning is not supported on Windows runners"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- ✅ Vulnerability scanning is enabled for Linux images"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Verify Windows images manually or use Docker Desktop locally"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "**Platform:** Windows | **Runner:** windows-latest"

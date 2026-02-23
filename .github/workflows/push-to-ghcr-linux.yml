@@ -1,0 +1,133 @@
+name: Push Docker Images (Linux) to GHCR
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - '.github/workflows/push-to-ghcr-linux.yml'
+      - 'images-config.linux.json'
+  
+  workflow_dispatch:
+    inputs:
+      config_file:
+        description: 'Configuration file path (default: images-config.linux.json)'
+        required: false
+        type: string
+        default: 'images-config.linux.json'
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  push-to-ghcr:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Load config
+        id: config
+        run: |
+          CONFIG_FILE="${{ github.event.inputs.config_file || 'images-config.linux.json' }}"
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "::error::Config file not found: $CONFIG_FILE"
+            exit 1
+          fi
+          
+          # Validar que JSON es un array
+          jq empty "$CONFIG_FILE"
+          MATRIX=$(jq -c 'map({source_image, repository_name, tag})' "$CONFIG_FILE")
+          echo "matrix=$(echo $MATRIX | jq -c .)" >> $GITHUB_OUTPUT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Process images
+        run: |
+          CONFIG_FILE="${{ github.event.inputs.config_file || 'images-config.linux.json' }}"
+          TRIVY_REPORT="/tmp/trivy-report.txt"
+          : > "$TRIVY_REPORT"
+          
+          jq -c '.[]' "$CONFIG_FILE" | while read -r line; do
+            SOURCE_IMAGE=$(echo "$line" | jq -r '.source_image')
+            REPOSITORY_NAME=$(echo "$line" | jq -r '.repository_name')
+            TAG=$(echo "$line" | jq -r '.tag // "latest"')
+            TARGET_IMAGE="${{ env.REGISTRY }}/${{ github.repository_owner }}/${REPOSITORY_NAME}"
+            
+            echo ""
+            echo "════════════════════════════════════════"
+            echo "📦 Processing: $SOURCE_IMAGE"
+            echo "════════════════════════════════════════"
+            
+            echo "📥 Pulling source image..."
+            docker pull "$SOURCE_IMAGE" --quiet
+            
+            echo "🔍 Scanning for vulnerabilities with Trivy..."
+            echo "### $SOURCE_IMAGE" >> "$TRIVY_REPORT"
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+              aquasec/trivy:latest image --severity HIGH,CRITICAL \
+              --format table "$SOURCE_IMAGE" >> "$TRIVY_REPORT" 2>&1 || true
+            echo "" >> "$TRIVY_REPORT"
+            
+            echo "🏷️  Tagging image..."
+            docker tag "$SOURCE_IMAGE" "${TARGET_IMAGE}:${TAG}"
+            docker tag "$SOURCE_IMAGE" "${TARGET_IMAGE}:latest"
+            
+            echo "🚀 Pushing to GHCR..."
+            docker push "${TARGET_IMAGE}:${TAG}"
+            docker push "${TARGET_IMAGE}:latest"
+            
+            echo "🧹 Cleaning up..."
+            docker rmi "$SOURCE_IMAGE" "${TARGET_IMAGE}:${TAG}" "${TARGET_IMAGE}:latest" || true
+            
+            echo "✅ Done: $SOURCE_IMAGE → ${TARGET_IMAGE}:${TAG}"
+          done
+          
+          # Guardar documento de reporte para el summary
+          cp "$TRIVY_REPORT" /tmp/trivy-summary.txt
+
+      - name: Create job summary
+        if: success()
+        run: |
+          CONFIG_FILE="${{ github.event.inputs.config_file || 'images-config.linux.json' }}"
+          TRIVY_REPORT="/tmp/trivy-summary.txt"
+          
+          echo "# ✅ Linux Images Pushed Successfully" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Images Processed:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          jq -c '.[]' "$CONFIG_FILE" | while read -r line; do
+            SOURCE=$(echo "$line" | jq -r '.source_image')
+            REPO=$(echo "$line" | jq -r '.repository_name')
+            TAG=$(echo "$line" | jq -r '.tag // "latest"')
+            echo "- \`$SOURCE\` → \`ghcr.io/${{ github.repository_owner }}/$REPO:$TAG\`" >> $GITHUB_STEP_SUMMARY
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🛡️ Security Scan Report (Trivy):" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "$TRIVY_REPORT" ]; then
+            cat "$TRIVY_REPORT" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No vulnerabilities found or scan not executed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Platform:** Linux | **Runner:** ubuntu-latest" >> $GITHUB_STEP_SUMMARY
