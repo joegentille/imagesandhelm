@@ -32,7 +32,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Load config
+      - name: Load and validate config
         id: config
         run: |
           CONFIG_FILE="${{ github.event.inputs.config_file || 'images-config.linux.json' }}"
@@ -41,10 +41,20 @@ jobs:
             exit 1
           fi
           
-          # Validar que JSON es un array
+          # Validte JSON format
           jq empty "$CONFIG_FILE"
-          MATRIX=$(jq -c 'map({source_image, repository_name, tag})' "$CONFIG_FILE")
-          echo "matrix=$(echo $MATRIX | jq -c .)" >> $GITHUB_OUTPUT
+          
+          IMAGE_COUNT=$(jq '[.[] | select(.source_image != null and .source_image != "")] | length' "$CONFIG_FILE")
+          echo "image_count=$IMAGE_COUNT" >> $GITHUB_OUTPUT
+          
+          # if there are valid images, set the matrix output
+          if [ "$IMAGE_COUNT" -gt 0 ]; then
+            MATRIX=$(jq -c 'map({source_image, repository_name, tag})' "$CONFIG_FILE")
+            echo "matrix=$(echo $MATRIX | jq -c .)" >> $GITHUB_OUTPUT
+            echo "has_images=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_images=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -57,6 +67,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Process images
+        if: steps.config.outputs.has_images == 'true'
         run: |
           CONFIG_FILE="${{ github.event.inputs.config_file || 'images-config.linux.json' }}"
           TRIVY_REPORT="/tmp/trivy-report.txt"
@@ -101,31 +112,56 @@ jobs:
           cp "$TRIVY_REPORT" /tmp/trivy-summary.txt
 
       - name: Create job summary
-        if: success()
+        if: always()
+        shell: bash
         run: |
           CONFIG_FILE="${{ github.event.inputs.config_file || 'images-config.linux.json' }}"
           TRIVY_REPORT="/tmp/trivy-summary.txt"
+          IMAGE_COUNT=${{ steps.config.outputs.image_count }}
           
-          echo "# ✅ Linux Images Pushed Successfully" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 📦 Images Processed:" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          jq -c '.[]' "$CONFIG_FILE" | while read -r line; do
-            SOURCE=$(echo "$line" | jq -r '.source_image')
-            REPO=$(echo "$line" | jq -r '.repository_name')
-            TAG=$(echo "$line" | jq -r '.tag // "latest"')
-            echo "- \`$SOURCE\` → \`ghcr.io/${{ github.repository_owner }}/$REPO:$TAG\`" >> $GITHUB_STEP_SUMMARY
-          done
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🛡️ Security Scan Report (Trivy):" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -f "$TRIVY_REPORT" ]; then
-            cat "$TRIVY_REPORT" >> $GITHUB_STEP_SUMMARY
+          if [ "$IMAGE_COUNT" -eq 0 ]; then
+            echo "# ⚠️ No Images to Process" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "El archivo de configuración \`$CONFIG_FILE\` no contiene imágenes válidas para procesar." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Por favor verifica:**" >> $GITHUB_STEP_SUMMARY
+            echo "- Que el archivo contenga un array válido" >> $GITHUB_STEP_SUMMARY
+            echo "- Que cada objeto tenga al menos el campo \`source_image\` con un valor no vacío" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Ejemplo de configuración válida:**" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+            echo "[" >> $GITHUB_STEP_SUMMARY
+            echo "  {" >> $GITHUB_STEP_SUMMARY
+            echo "    \"source_image\": \"nginx:alpine\"," >> $GITHUB_STEP_SUMMARY
+            echo "    \"repository_name\": \"nginx\"," >> $GITHUB_STEP_SUMMARY
+            echo "    \"tag\": \"v1\"" >> $GITHUB_STEP_SUMMARY
+            echo "  }" >> $GITHUB_STEP_SUMMARY
+            echo "]" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           else
-            echo "No vulnerabilities found or scan not executed" >> $GITHUB_STEP_SUMMARY
+            echo "# ✅ Linux Images Pushed Successfully" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## 📦 Images Processed:" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            jq -c '.[]' "$CONFIG_FILE" | while read -r line; do
+              SOURCE=$(echo "$line" | jq -r '.source_image')
+              REPO=$(echo "$line" | jq -r '.repository_name')
+              TAG=$(echo "$line" | jq -r '.tag // "latest"')
+              echo "- \`$SOURCE\` → \`ghcr.io/${{ github.repository_owner }}/$REPO:$TAG\`" >> $GITHUB_STEP_SUMMARY
+            done
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## 🛡️ Security Scan Report (Trivy):" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            
+            if [ -f "$TRIVY_REPORT" ]; then
+              cat "$TRIVY_REPORT" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "No vulnerabilities found or scan not executed" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           fi
           
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
