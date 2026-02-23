@@ -71,7 +71,11 @@ jobs:
         run: |
           CONFIG_FILE="${{ github.event.inputs.config_file || 'images-config.linux.json' }}"
           TRIVY_REPORT="/tmp/trivy-report.txt"
+          SUCCESS_LOG="/tmp/success-images.txt"
+          ERROR_LOG="/tmp/error-images.txt"
           : > "$TRIVY_REPORT"
+          : > "$SUCCESS_LOG"
+          : > "$ERROR_LOG"
           
           jq -c '.[]' "$CONFIG_FILE" | while read -r line; do
             SOURCE_IMAGE=$(echo "$line" | jq -r '.source_image')
@@ -85,7 +89,10 @@ jobs:
             echo "════════════════════════════════════════"
             
             echo "📥 Pulling source image..."
-            docker pull "$SOURCE_IMAGE" --quiet
+            if ! docker pull "$SOURCE_IMAGE" --quiet 2>&1; then
+              echo "❌ FAILED to pull: $SOURCE_IMAGE" | tee -a "$ERROR_LOG"
+              continue
+            fi
             
             echo "🔍 Scanning for vulnerabilities with Trivy..."
             echo "### $SOURCE_IMAGE" >> "$TRIVY_REPORT"
@@ -95,21 +102,42 @@ jobs:
             echo "" >> "$TRIVY_REPORT"
             
             echo "🏷️  Tagging image..."
-            docker tag "$SOURCE_IMAGE" "${TARGET_IMAGE}:${TAG}"
-            docker tag "$SOURCE_IMAGE" "${TARGET_IMAGE}:latest"
+            if ! docker tag "$SOURCE_IMAGE" "${TARGET_IMAGE}:${TAG}" 2>&1; then
+              echo "❌ FAILED to tag: $SOURCE_IMAGE → ${TARGET_IMAGE}:${TAG}" | tee -a "$ERROR_LOG"
+              docker rmi "$SOURCE_IMAGE" 2>/dev/null || true
+              continue
+            fi
+            
+            if ! docker tag "$SOURCE_IMAGE" "${TARGET_IMAGE}:latest" 2>&1; then
+              echo "❌ FAILED to tag latest: $SOURCE_IMAGE → ${TARGET_IMAGE}:latest" | tee -a "$ERROR_LOG"
+              docker rmi "$SOURCE_IMAGE" "${TARGET_IMAGE}:${TAG}" 2>/dev/null || true
+              continue
+            fi
             
             echo "🚀 Pushing to GHCR..."
-            docker push "${TARGET_IMAGE}:${TAG}"
-            docker push "${TARGET_IMAGE}:latest"
+            if ! docker push "${TARGET_IMAGE}:${TAG}" 2>&1; then
+              echo "❌ FAILED to push: ${TARGET_IMAGE}:${TAG}" | tee -a "$ERROR_LOG"
+              docker rmi "$SOURCE_IMAGE" "${TARGET_IMAGE}:${TAG}" "${TARGET_IMAGE}:latest" 2>/dev/null || true
+              continue
+            fi
+            
+            if ! docker push "${TARGET_IMAGE}:latest" 2>&1; then
+              echo "❌ FAILED to push latest: ${TARGET_IMAGE}:latest" | tee -a "$ERROR_LOG"
+              docker rmi "$SOURCE_IMAGE" "${TARGET_IMAGE}:${TAG}" "${TARGET_IMAGE}:latest" 2>/dev/null || true
+              continue
+            fi
             
             echo "🧹 Cleaning up..."
-            docker rmi "$SOURCE_IMAGE" "${TARGET_IMAGE}:${TAG}" "${TARGET_IMAGE}:latest" || true
+            docker rmi "$SOURCE_IMAGE" "${TARGET_IMAGE}:${TAG}" "${TARGET_IMAGE}:latest" 2>/dev/null || true
             
             echo "✅ Done: $SOURCE_IMAGE → ${TARGET_IMAGE}:${TAG}"
+            echo "$SOURCE_IMAGE|${TARGET_IMAGE}:${TAG}" >> "$SUCCESS_LOG"
           done
           
-          # Guardar documento de reporte para el summary
+          # Guardar documentos de reporte para el summary
           cp "$TRIVY_REPORT" /tmp/trivy-summary.txt
+          [ -f "$SUCCESS_LOG" ] && cp "$SUCCESS_LOG" /tmp/success-summary.txt || touch /tmp/success-summary.txt
+          [ -f "$ERROR_LOG" ] && cp "$ERROR_LOG" /tmp/error-summary.txt || touch /tmp/error-summary.txt
 
       - name: Create job summary
         if: always()
@@ -139,31 +167,60 @@ jobs:
             echo "]" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           else
-            echo "# ✅ Linux Images Pushed Successfully" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "## 📦 Images Processed:" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            jq -c '.[]' "$CONFIG_FILE" | while read -r line; do
-              SOURCE=$(echo "$line" | jq -r '.source_image')
-              REPO=$(echo "$line" | jq -r '.repository_name')
-              TAG=$(echo "$line" | jq -r '.tag // "latest"')
-              echo "- \`$SOURCE\` → \`ghcr.io/${{ github.repository_owner }}/$REPO:$TAG\`" >> $GITHUB_STEP_SUMMARY
-            done
+            # Contar imágenes exitosas y fallidas
+            SUCCESS_COUNT=0
+            [ -f "$SUCCESS_LOG" ] && SUCCESS_COUNT=$(wc -l < "$SUCCESS_LOG" | tr -d ' ')
             
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "## 🛡️ Security Scan Report (Trivy):" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            ERROR_COUNT=0
+            [ -f "$ERROR_LOG" ] && ERROR_COUNT=$(wc -l < "$ERROR_LOG" | tr -d ' ')
             
-            if [ -f "$TRIVY_REPORT" ]; then
-              cat "$TRIVY_REPORT" >> $GITHUB_STEP_SUMMARY
+            if [ "$SUCCESS_COUNT" -gt 0 ]; then
+              echo "# ✅ Linux Images Processed Successfully" >> $GITHUB_STEP_SUMMARY
             else
-              echo "No vulnerabilities found or scan not executed" >> $GITHUB_STEP_SUMMARY
+              echo "# ❌ Linux Images Processing Failed" >> $GITHUB_STEP_SUMMARY
             fi
             
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            if [ "$SUCCESS_COUNT" -gt 0 ]; then
+              echo "## 📦 Images Pushed Successfully ($SUCCESS_COUNT/$IMAGE_COUNT):" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              
+              if [ -f "$SUCCESS_LOG" ]; then
+                while IFS='|' read -r source target; do
+                  echo "- ✅ \`$source\` → \`$target\`" >> $GITHUB_STEP_SUMMARY
+                done < "$SUCCESS_LOG"
+              fi
+              
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            if [ "$ERROR_COUNT" -gt 0 ]; then
+              echo "## ❌ Images Failed to Process ($ERROR_COUNT/$IMAGE_COUNT):" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              
+              if [ -f "$ERROR_LOG" ]; then
+                cat "$ERROR_LOG" | sed 's/^/- /' >> $GITHUB_STEP_SUMMARY
+              fi
+              
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            if [ "$SUCCESS_COUNT" -gt 0 ]; then
+              SUCCESS_LOG="/tmp/success-summary.txt"
+              echo "## 🛡️ Security Scan Report (Trivy - Only Successful Images):" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+              
+              if [ -f "$TRIVY_REPORT" ]; then
+                cat "$TRIVY_REPORT" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "No vulnerabilities found or scan not executed" >> $GITHUB_STEP_SUMMARY
+              fi
+              
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            fi
           fi
           
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Platform:** Linux | **Runner:** ubuntu-latest" >> $GITHUB_STEP_SUMMARY

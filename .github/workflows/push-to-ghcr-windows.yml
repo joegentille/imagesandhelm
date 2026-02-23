@@ -80,6 +80,8 @@ jobs:
         shell: pwsh
         run: |
           $CONFIG_FILE = "${{ github.event.inputs.config_file || 'images-config.windows.json' }}"
+          $successLog = @()
+          $errorLog = @()
           
           $images = Get-Content $CONFIG_FILE | ConvertFrom-Json
           
@@ -100,21 +102,62 @@ jobs:
             Write-Host "════════════════════════════════════════" -ForegroundColor Cyan
             
             Write-Host "📥 Pulling source image..."
-            docker pull "$sourceImage"
+            $pullOutput = docker pull "$sourceImage" 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              $errorMsg = "❌ FAILED to pull: $sourceImage - $pullOutput"
+              Write-Host $errorMsg -ForegroundColor Red
+              $errorLog += $errorMsg
+              continue
+            }
             
             Write-Host "🏷️  Tagging image..."
-            docker tag "$sourceImage" "${targetImage}:${tag}"
-            docker tag "$sourceImage" "${targetImage}:latest"
+            $tagOutput = docker tag "$sourceImage" "${targetImage}:${tag}" 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              $errorMsg = "❌ FAILED to tag: $sourceImage → ${targetImage}:${tag}"
+              Write-Host $errorMsg -ForegroundColor Red
+              $errorLog += $errorMsg
+              docker rmi "$sourceImage" 2>$null
+              continue
+            }
+            
+            $tagLatestOutput = docker tag "$sourceImage" "${targetImage}:latest" 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              $errorMsg = "❌ FAILED to tag latest: $sourceImage → ${targetImage}:latest"
+              Write-Host $errorMsg -ForegroundColor Red
+              $errorLog += $errorMsg
+              docker rmi "$sourceImage" "${targetImage}:${tag}" 2>$null
+              continue
+            }
             
             Write-Host "🚀 Pushing to GHCR..."
-            docker push "${targetImage}:${tag}"
-            docker push "${targetImage}:latest"
+            $pushOutput = docker push "${targetImage}:${tag}" 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              $errorMsg = "❌ FAILED to push: ${targetImage}:${tag}"
+              Write-Host $errorMsg -ForegroundColor Red
+              $errorLog += $errorMsg
+              docker rmi "$sourceImage" "${targetImage}:${tag}" "${targetImage}:latest" 2>$null
+              continue
+            }
+            
+            $pushLatestOutput = docker push "${targetImage}:latest" 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              $errorMsg = "❌ FAILED to push latest: ${targetImage}:latest"
+              Write-Host $errorMsg -ForegroundColor Red
+              $errorLog += $errorMsg
+              docker rmi "$sourceImage" "${targetImage}:${tag}" "${targetImage}:latest" 2>$null
+              continue
+            }
             
             Write-Host "🧹 Cleaning up..."
             docker rmi "$sourceImage" "${targetImage}:${tag}" "${targetImage}:latest" 2>$null
             
             Write-Host "✅ Done: $sourceImage → ${targetImage}:${tag}" -ForegroundColor Green
+            $successLog += "$sourceImage|${targetImage}:${tag}"
           }
+          
+          # Save logs to files
+          $successLog | Out-File -FilePath "/tmp/success-summary.txt" -Encoding utf8
+          $errorLog | Out-File -FilePath "/tmp/error-summary.txt" -Encoding utf8
 
       - name: Create job summary
         if: always()
@@ -143,24 +186,53 @@ jobs:
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "]"
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "``````"
           } else {
-            $images = Get-Content $CONFIG_FILE | ConvertFrom-Json
+            $successLog = @()
+            $errorLog = @()
             
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "# ✅ Windows Images Pushed Successfully"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## 📦 Images Processed:"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+            if (Test-Path "/tmp/success-summary.txt") {
+              $successLog = Get-Content "/tmp/success-summary.txt" | Where-Object { $_.Trim().Length -gt 0 }
+            }
             
-            foreach ($image in $images) {
-              if ($image.source_image -and $image.source_image.Trim().Length -gt 0) {
-                $source = $image.source_image
-                $repo = $image.repository_name
-                $tag = $image.tag ?? "latest"
-                $line = "- ``$source`` → ``ghcr.io/${{ github.repository_owner }}/$repo`:$tag``"
-                Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $line
-              }
+            if (Test-Path "/tmp/error-summary.txt") {
+              $errorLog = Get-Content "/tmp/error-summary.txt" | Where-Object { $_.Trim().Length -gt 0 }
+            }
+            
+            $successCount = if ($null -eq $successLog) { 0 } else { @($successLog).Count }
+            $errorCount = if ($null -eq $errorLog) { 0 } else { @($errorLog).Count }
+            
+            if ($successCount -gt 0) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "# ✅ Windows Images Processed Successfully"
+            } else {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "# ❌ Windows Images Processing Failed"
             }
             
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+            
+            if ($successCount -gt 0) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## 📦 Images Pushed Successfully ($successCount/$imageCount):"
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+              
+              foreach ($line in $successLog) {
+                $parts = $line.Split('|')
+                if ($parts.Count -eq 2) {
+                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- ✅ ``$($parts[0])`` → ``$($parts[1])``"
+                }
+              }
+              
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+            }
+            
+            if ($errorCount -gt 0) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## ❌ Images Failed to Process ($errorCount/$imageCount):"
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+              
+              foreach ($line in $errorLog) {
+                Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- $line"
+              }
+              
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+            }
+            
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## 🔒 Security Notes:"
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- ⚠️ Trivy scanning is not supported on Windows runners"
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- ✅ Vulnerability scanning is enabled for Linux images"
