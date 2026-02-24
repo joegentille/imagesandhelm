@@ -1,10 +1,10 @@
 [
   {
     "type": "local",
-    "chart_path": "./charts/mychart",
-    "chart_name": "mychart",
+    "chart_path": "./charts/proyecto1",
+    "chart_name": "micharttest",
     "chart_version": "1.0.0",
-    "description": "My Helm Chart"
+    "description": "mio de mi"
   },
   {
     "type": "artifacthub",

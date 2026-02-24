@@ -1,0 +1,6 @@
+apiVersion: v2
+name: mi-aplicacion-it      # El nombre que aparecerá en GHCR
+description: Un Helm chart para mi servicio de infraestructura
+type: application
+version: 1.0.0              # Versión del Chart (importante para el tag)
+appVersion: "2.1.0"
