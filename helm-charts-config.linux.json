@@ -1,7 +1,7 @@
 [
   {
     "type": "local",
-    "chart_path": "./charts/proyecto1",
+    "chart_path": ".charts/proyecto1",
     "chart_name": "micharttest",
     "chart_version": "1.0.0",
     "description": "mio de mi"
