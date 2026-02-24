@@ -157,15 +157,15 @@ jobs:
           
           # Save logs to files
           if ($successLog.Count -gt 0) {
-            $successLog | Out-File -FilePath "/tmp/success-summary.txt" -Encoding utf8
+            $successLog | Out-File -FilePath "$env:TEMP\success-summary.txt" -Encoding utf8
           } else {
-            "" | Out-File -FilePath "/tmp/success-summary.txt" -Encoding utf8
+            "" | Out-File -FilePath "$env:TEMP\success-summary.txt" -Encoding utf8
           }
           
           if ($errorLog.Count -gt 0) {
-            $errorLog | Out-File -FilePath "/tmp/error-summary.txt" -Encoding utf8
+            $errorLog | Out-File -FilePath "$env:TEMP\error-summary.txt" -Encoding utf8
           } else {
-            "" | Out-File -FilePath "/tmp/error-summary.txt" -Encoding utf8
+            "" | Out-File -FilePath "$env:TEMP\error-summary.txt" -Encoding utf8
           }
 
       - name: Create job summary
@@ -198,15 +198,15 @@ jobs:
             $successLog = @()
             $errorLog = @()
             
-            if (Test-Path "/tmp/success-summary.txt" -PathType Leaf) {
-              $content = Get-Content "/tmp/success-summary.txt" -ErrorAction SilentlyContinue
+            if (Test-Path "$env:TEMP\success-summary.txt" -PathType Leaf) {
+              $content = Get-Content "$env:TEMP\success-summary.txt" -ErrorAction SilentlyContinue
               if ($null -ne $content) {
                 $successLog = @($content) | Where-Object { $null -ne $_ -and $_.Trim().Length -gt 0 }
               }
             }
             
-            if (Test-Path "/tmp/error-summary.txt" -PathType Leaf) {
-              $content = Get-Content "/tmp/error-summary.txt" -ErrorAction SilentlyContinue
+            if (Test-Path "$env:TEMP\error-summary.txt" -PathType Leaf) {
+              $content = Get-Content "$env:TEMP\error-summary.txt" -ErrorAction SilentlyContinue
               if ($null -ne $content) {
                 $errorLog = @($content) | Where-Object { $null -ne $_ -and $_.Trim().Length -gt 0 }
               }
