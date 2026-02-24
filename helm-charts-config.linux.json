@@ -12,5 +12,12 @@
     "chart_name": "nginx-mirror-v1",
     "chart_version": "15.0.0",
     "description": "Nginx chart from Bitnami"
+  },
+  {
+    "type": "artifacthub",
+    "artifacthub_chart": "bitnami/apache",
+    "chart_name": "mirror-apache-v5",
+    "chart_version": "11.3.0",
+    "description": "Apache chart from Bitnami"
   }
 ]
