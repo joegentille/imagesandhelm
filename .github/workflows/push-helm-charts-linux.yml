@@ -1,0 +1,250 @@
+name: Push Helm Charts (Linux) to GHCR
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - '.github/workflows/push-helm-charts-linux.yml'
+      - 'helm-charts-config.linux.json'
+      - 'charts/**'
+  
+  workflow_dispatch:
+    inputs:
+      config_file:
+        description: 'Configuration file path (default: helm-charts-config.linux.json)'
+        required: false
+        type: string
+        default: 'helm-charts-config.linux.json'
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  push-helm-charts:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: 'latest'
+
+      - name: Load and validate config
+        id: config
+        run: |
+          CONFIG_FILE="${{ github.event.inputs.config_file || 'helm-charts-config.linux.json' }}"
+          if [ ! -f "$CONFIG_FILE" ]; then
+            echo "::error::Config file not found: $CONFIG_FILE"
+            exit 1
+          fi
+          
+          # Validar que JSON es un array
+          jq empty "$CONFIG_FILE"
+          
+          # Contar charts válidos (con type, chart_name y (chart_path o artifacthub_chart))
+          CHART_COUNT=$(jq '[.[] | select(.type != null and .type != "" and .chart_name != null and .chart_name != "" and (((.type == "local" and .chart_path != null and .chart_path != "") or (.type == "artifacthub" and .artifacthub_chart != null and .artifacthub_chart != ""))))] | length' "$CONFIG_FILE")
+          echo "chart_count=$CHART_COUNT" >> $GITHUB_OUTPUT
+          
+          # Calcular si hay charts que procesar
+          if [ "$CHART_COUNT" -gt 0 ]; then
+            echo "has_charts=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_charts=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Log in to Container Registry
+        if: steps.config.outputs.has_charts == 'true'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login -u ${{ github.actor }} --password-stdin ${{ env.REGISTRY }}
+
+      - name: Process helm charts
+        if: steps.config.outputs.has_charts == 'true'
+        run: |
+          CONFIG_FILE="${{ github.event.inputs.config_file || 'helm-charts-config.linux.json' }}"
+          SUCCESS_LOG="/tmp/success-charts.txt"
+          ERROR_LOG="/tmp/error-charts.txt"
+          : > "$SUCCESS_LOG"
+          : > "$ERROR_LOG"
+          
+          while read -r line; do
+            CHART_TYPE=$(echo "$line" | jq -r '.type')
+            CHART_NAME=$(echo "$line" | jq -r '.chart_name')
+            CHART_VERSION=$(echo "$line" | jq -r '.chart_version // "latest"')
+            DESCRIPTION=$(echo "$line" | jq -r '.description // "Helm Chart"')
+            TARGET_CHART="${{ env.REGISTRY }}/${{ github.repository_owner }}/${CHART_NAME}"
+            
+            echo ""
+            echo "════════════════════════════════════════"
+            echo "📦 Processing: $CHART_NAME"
+            echo "════════════════════════════════════════"
+            
+            PACKAGE_DIR="/tmp/helm-packages"
+            mkdir -p "$PACKAGE_DIR"
+            CHART_FILE=""
+            
+            if [ "$CHART_TYPE" = "local" ]; then
+              # ============ PROCESAR CHART LOCAL ============
+              CHART_PATH=$(echo "$line" | jq -r '.chart_path')
+              
+              echo "📂 Type: Local Chart"
+              
+              if [ ! -d "$CHART_PATH" ]; then
+                echo "❌ FAILED - Chart directory not found: $CHART_PATH" | tee -a "$ERROR_LOG"
+                continue
+              fi
+              
+              echo "📝 Validating Helm Chart..."
+              if ! helm lint "$CHART_PATH" 2>&1; then
+                echo "❌ FAILED - Helm lint error: $CHART_PATH" | tee -a "$ERROR_LOG"
+                continue
+              fi
+              
+              echo "📦 Packaging Helm Chart..."
+              if ! helm package "$CHART_PATH" --version "$CHART_VERSION" --destination "$PACKAGE_DIR" 2>&1; then
+                echo "❌ FAILED to package: $CHART_NAME:$CHART_VERSION" | tee -a "$ERROR_LOG"
+                continue
+              fi
+              
+              CHART_FILE="$PACKAGE_DIR/${CHART_NAME}-${CHART_VERSION}.tgz"
+              
+            elif [ "$CHART_TYPE" = "artifacthub" ]; then
+              # ============ PROCESAR CHART DE ARTIFACT HUB ============
+              ARTIFACTHUB_CHART=$(echo "$line" | jq -r '.artifacthub_chart')
+              
+              echo "🌐 Type: Artifact Hub Chart"
+              echo "Pulling chart: $ARTIFACTHUB_CHART:$CHART_VERSION"
+              
+              # Detectar el repositorio (antes del slash)
+              REPO=$(echo "$ARTIFACTHUB_CHART" | cut -d'/' -f1)
+              
+              # Agregar repositories públicas comunes
+              if [ "$REPO" = "bitnami" ]; then
+                helm repo add bitnami https://charts.bitnami.com/bitnami >/dev/null 2>&1
+              elif [ "$REPO" = "stable" ]; then
+                helm repo add stable https://charts.helm.sh/stable >/dev/null 2>&1
+              elif [ "$REPO" = "incubator" ]; then
+                helm repo add incubator https://charts.helm.sh/incubator >/dev/null 2>&1
+              else
+                echo "⚠️ Trying to pull as OCI chart from artifacthub..."
+              fi
+              
+              helm repo update >/dev/null 2>&1
+              
+              echo "📥 Pulling from Artifact Hub..."
+              if ! helm pull "$ARTIFACTHUB_CHART" --version "$CHART_VERSION" --destination "$PACKAGE_DIR" 2>&1; then
+                echo "❌ FAILED to pull: $ARTIFACTHUB_CHART:$CHART_VERSION" | tee -a "$ERROR_LOG"
+                continue
+              fi
+              
+              # Buscar el archivo generado
+              CHART_FILE=$(find "$PACKAGE_DIR" -name "*.tgz" -type f | head -1)
+              
+              if [ ! -f "$CHART_FILE" ]; then
+                echo "❌ FAILED - Chart package not found after pull" | tee -a "$ERROR_LOG"
+                continue
+              fi
+            else
+              echo "❌ FAILED - Unknown chart type: $CHART_TYPE" | tee -a "$ERROR_LOG"
+              continue
+            fi
+            
+            # ============ VALIDAR ARCHIVO Y PUSHEAR (AMBOS TIPOS) ============
+            if [ ! -f "$CHART_FILE" ]; then
+              echo "❌ FAILED - Chart file not found: $CHART_FILE" | tee -a "$ERROR_LOG"
+              continue
+            fi
+            
+            echo "🚀 Pushing to GHCR..."
+            if ! helm push "$CHART_FILE" "oci://${{ env.REGISTRY }}/${{ github.repository_owner }}" 2>&1; then
+              echo "❌ FAILED to push: ${TARGET_CHART}:${CHART_VERSION}" | tee -a "$ERROR_LOG"
+              rm -f "$CHART_FILE"
+              continue
+            fi
+            
+            echo "🧹 Cleaning up..."
+            rm -f "$CHART_FILE"
+            
+            echo "✅ Done: $CHART_NAME:$CHART_VERSION → ${TARGET_CHART}:${CHART_VERSION}"
+            echo "$CHART_NAME|${TARGET_CHART}:${CHART_VERSION}|$DESCRIPTION|$CHART_TYPE" >> "$SUCCESS_LOG"
+          done < <(jq -c '.[]' "$CONFIG_FILE")
+          
+          # Guardar documentos de reporte para el summary
+          [ -f "$SUCCESS_LOG" ] && [ -s "$SUCCESS_LOG" ] && cp "$SUCCESS_LOG" /tmp/success-charts-summary.txt || touch /tmp/success-charts-summary.txt
+          [ -f "$ERROR_LOG" ] && [ -s "$ERROR_LOG" ] && cp "$ERROR_LOG" /tmp/error-charts-summary.txt || touch /tmp/error-charts-summary.txt
+
+      - name: Create job summary
+        if: always()
+        shell: bash
+        run: |
+          CONFIG_FILE="${{ github.event.inputs.config_file || 'helm-charts-config.linux.json' }}"
+          SUCCESS_LOG="/tmp/success-charts-summary.txt"
+          ERROR_LOG="/tmp/error-charts-summary.txt"
+          CHART_COUNT=${{ steps.config.outputs.chart_count }}
+          
+          if [ "$CHART_COUNT" -eq 0 ]; then
+            echo "# ⚠️ No Helm Charts to Process" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "El archivo de configuración \`$CONFIG_FILE\` no contiene charts válidos para procesar." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Por favor verifica:**" >> $GITHUB_STEP_SUMMARY
+            echo "- Que el archivo contenga un array válido" >> $GITHUB_STEP_SUMMARY
+            echo "- Que cada objeto tenga al menos el campo \`chart_path\` con un valor no vacío" >> $GITHUB_STEP_SUMMARY
+          else
+            # Contar charts exitosos y fallidos
+            SUCCESS_COUNT=0
+            if [ -f "$SUCCESS_LOG" ] && [ -s "$SUCCESS_LOG" ]; then
+              SUCCESS_COUNT=$(wc -l < "$SUCCESS_LOG")
+            fi
+            
+            ERROR_COUNT=0
+            if [ -f "$ERROR_LOG" ] && [ -s "$ERROR_LOG" ]; then
+              ERROR_COUNT=$(wc -l < "$ERROR_LOG")
+            fi
+            
+            if [ "$SUCCESS_COUNT" -gt 0 ]; then
+              echo "# ✅ Helm Charts Pushed Successfully" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "# ❌ Helm Charts Push Failed" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            if [ "$SUCCESS_COUNT" -gt 0 ]; then
+              echo "## 📦 Helm Charts Pushed ($SUCCESS_COUNT/$CHART_COUNT):" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              
+              if [ -f "$SUCCESS_LOG" ]; then
+                while IFS='|' read -r name target description type; do
+                  TYPE_EMOJI="📂"
+                  [ "$type" = "artifacthub" ] && TYPE_EMOJI="🌐"
+                  echo "- ✅ $TYPE_EMOJI \`$name\` → \`$target\`" >> $GITHUB_STEP_SUMMARY
+                  echo "  - $description" >> $GITHUB_STEP_SUMMARY
+                done < "$SUCCESS_LOG"
+              fi
+              
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            if [ "$ERROR_COUNT" -gt 0 ]; then
+              echo "## ❌ Helm Charts Failed ($ERROR_COUNT/$CHART_COUNT):" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              
+              if [ -f "$ERROR_LOG" ]; then
+                cat "$ERROR_LOG" | sed 's/^/- /' >> $GITHUB_STEP_SUMMARY
+              fi
+              
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Platform:** Linux | **Runner:** ubuntu-latest" >> $GITHUB_STEP_SUMMARY

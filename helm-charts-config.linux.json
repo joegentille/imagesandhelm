@@ -1,0 +1,16 @@
+[
+  {
+    "type": "local",
+    "chart_path": "./charts/mychart",
+    "chart_name": "mychart",
+    "chart_version": "1.0.0",
+    "description": "My Helm Chart"
+  },
+  {
+    "type": "artifacthub",
+    "artifacthub_chart": "bitnami/nginx",
+    "chart_name": "nginx-mirror-v1",
+    "chart_version": "15.0.0",
+    "description": "Nginx chart from Bitnami"
+  }
+]
